@@ -1,0 +1,302 @@
+set_color_src = `
+if(hit_info.valid)
+{
+    color = vec3f(0.0); 
+    var albedo = hit_info.material.albedo;
+    
+    // We wanted to make the mini look like the simpsons car, so we checked the red and blue vals to find what is green
+    let isGreenPaint = (approx_greater_than(albedo.g,(albedo.r + 0.02))) && 
+                         (approx_greater_than(albedo.g, (albedo.b + 0.02)));
+   
+
+    //If it is green, then we swap to a light pink color
+    if(isGreenPaint) {
+        albedo = vec3f(0.85, 0.16, 0.55); // Simpsons Pink
+    }
+
+
+    //This is what our shadow tint for the front to get this maroon-ish color
+    let shadowTint = vec3f(0.35, 0.1, 0.15);
+    let lightTint  = vec3f(1.0, 0.98, 0.95); 
+
+    //Material Vals for diffuse, and specular lighting
+    var roughness = hit_info.material.roughness;
+    var metallic  = hit_info.material.metallic; 
+    var emissive  = hit_info.material.emissive;
+
+    let hit_point = ray.origin + ray.direction * hit_info.distance;
+    let query_point = hit_point + hit_info.normal * 0.001;
+    let pi = 3.14159265359;
+
+    var totalDiffuseLight = 0.0;
+
+     //Controls the density of our comic book dots
+     let Density = 600.0;
+
+     //Simulates the i and j pixel coords since I was unable to find them
+     let i = ray.direction.x / ray.direction.z;
+     let j = ray.direction.y / ray.direction.z;
+
+
+     //Creates a pattern of the dots by using pixel coords with sign and cosine
+     let pattern = sin(i * Density) * cos(j * Density);
+
+
+    // PERLIN NOISE IMPLEMENTATION FOR PLANE (Will be using hit_point for texture coords)
+    // Check for Plane & Normal Pointing Upwards
+    if(scene_array[hit_info.object_id].object_type == 2u && hit_info.normal.y > 0.9) 
+    {
+      emissive = true;
+      metallic = 1.0;
+      roughness = .5;
+      // Make a grid with the texture coords
+      let textCoords : vec2f = hit_point.xz * 2.0;  // Create a grid
+      var cellId : vec2f = floor(textCoords);   // Tells which cell we are in
+      var cellTextCoords : vec2f = fract(textCoords); // Tells us where the pixel is within the cell
+
+      // Grab Corners of Grid
+      let botLeft = cellId + vec2f(0.0);
+      let botRight = cellId + vec2f(1.0, 0.0);
+      let topLeft = cellId + vec2f(0.0, 1.0);
+      let topRight = cellId + vec2f(1.0);
+
+      // Random Number For Perlin Noise (Grabs random vector for the direction (slope) with hash)
+      let gradBotLeft = randGradient(botLeft); // Grabs a random direction for the corner vector
+      let gradBotRight = randGradient(botRight); 
+      let gradTopLeft = randGradient(topLeft); 
+      let gradTopRight = randGradient(topRight); 
+
+      // Grab Distant (This will grab the distance of each pixel to the corners of the cell)
+      let distToBotLeft = cellTextCoords - vec2f(0.0); 
+      let distToBotRight = cellTextCoords - vec2f(1.0, 0.0);
+      let distToTopLeft = cellTextCoords - vec2f(0.0, 1.0);
+      let distToTopRight = cellTextCoords - vec2f(1.0);
+
+      // Calculate The Slope Using Dot Product
+      let dotBotLeft = dot(gradBotLeft, distToBotLeft); // Value shows how much the gradient affects the pixel
+      let dotBotRight = dot(gradBotRight, distToBotRight);
+      let dotTopLeft = dot(gradTopLeft, distToTopLeft);
+      let dotTopRight = dot(gradTopRight, distToTopRight);
+
+      // Smooth out Each Cell's Texture Coords (Gets rid of harsh line of grid cells)
+      //cellTextCoords = 6*pow(cellTextCoords, 5.0) - 15 * pow(cellTextCoords, 4.0) + 10 * pow(cellTextCoords, 3.0); // DONT USE, SLOW
+      let smoothCoords = cellTextCoords * cellTextCoords * cellTextCoords * (cellTextCoords * (cellTextCoords * 6.0 - 15.0) + 10.0);
+
+      // Interpolation Calculation (Blends all of the vectors together)
+      let interBot = mix(dotBotLeft, dotBotRight, smoothCoords.x);
+      let interTop = mix(dotTopLeft, dotTopRight, smoothCoords.x);
+      let perlin = mix(interBot, interTop, smoothCoords.y);
+
+      // Finish the noise, and put it between 0 and 1
+      let perlinNoise = (perlin + 1.0) * 0.5;
+      albedo = vec3f(0.92, 0.797, 0.633);
+      // Add Perlin to the Color
+      albedo = mix(albedo, vec3f(0.0), perlinNoise * 0.5);
+    }
+    
+     //Feeds the wave pattern we made and determines the color
+     let halftone = step(0.0, pattern);
+    for(var light_index : u32 = 0u; light_index < num_lights; light_index += 1u)
+    {
+       let V = normalize(-ray.direction);
+       let radiance = light_radiance(light_index, query_point, hit_info.normal);
+       let L = get_light_dir(light_index, query_point);
+       let H = normalize(L + V);
+      let nDotL = dot(hit_info.normal, L);
+
+       // Lambertian Diffuse and adding cel + hue shading
+       //Here, we are setting a float var determining shadow threshold, how much something will be covered in the shadow
+       let shadowEdge = 0.15; 
+
+       //Here, we are creating a "fuzz" to make a smooth transition from the bright pinkish of the car, to the maroon-ish of the bumper
+       let fuzz = 0.02; 
+
+       //This checks our shadows and if its in the direction of the sun or not. Forcing it to be either 0 or 1.
+       // This means it is either not being hit by the sun, or is
+       let isLit = smoothstep(shadowEdge - fuzz, shadowEdge + fuzz, nDotL);
+       totalDiffuseLight += isLit;
+       let litLayer = albedo * lightTint; 
+       let diffuseOut = (litLayer / pi) * (1.0 - metallic) * isLit;
+
+       // specular(Blin Phong) with cel and hue shading
+
+       let nDotH = max(dot(hit_info.normal, H), 0.0);
+       let shine = (1.0 - roughness) * 128.0; 
+       let rawSpecular = pow(nDotH, shine);
+       let specIntensity = smoothstep(0.5, 0.52, rawSpecular);
+       let Fr = mix(vec3f(0.04), albedo, metallic);
+
+       //Apply is lit to our specular
+       let specularOut = Fr * specIntensity * isLit;
+       
+       // 3. Creating lighting for the rims specifically
+       let rim_amount = 1.0 - max(dot(hit_info.normal, V), 0.0);
+       let rim_threshold = 0.6;
+       let rim_intensity = smoothstep(rim_threshold, rim_threshold + 0.05, rim_amount);
+       let rim = rim_intensity * vec3f(1.0, 0.9, 0.8) * 0.5;
+      
+      
+       color += radiance * (diffuseOut + specularOut + (rim * albedo));
+    }
+    
+    //Apply the shadow tint to the car
+    var ambientBase = shadowTint;
+    if(!isGreenPaint) {
+        ambientBase = vec3f(0.05); 
+    }
+    //Creates the dark and light shadows
+    let darkShadow = ambientBase * 0.3;
+    let lightShadow = ambientBase * 0.6;
+
+    //Finally mixing the pattern with colors, clamping the shadow strength, and applying it to the color
+    let comicShadowColor = mix(darkShadow, lightShadow, halftone);
+    let shadowStrength = 1.0 - clamp(totalDiffuseLight, 0.0, 1.0);
+    
+    color += comicShadowColor * shadowStrength;
+    if(emissive) {
+        color += albedo;
+    }
+
+    //Using reinhard tonemapping 
+    color = color * 1.2; 
+    color = color / (color + vec3f(1.0));
+
+}else{
+    color = vec3f(0.69, 0.88, 1.0);
+}
+`
+
+global_src = `
+// Hash Function to Hash the Texture Coords
+fn hash(cellCorner : vec2f) -> f32
+{
+  // Personal Note: Dotting the textCoords with the Vector is mixing the coords/ Combining the Inputs
+  //                The sine spreads the influence across the bits and destroy patterns (Bit scrambling) also puts the values to [-1,1]
+  //                The final mult is further spreading influence (Multiplying by the hash constant)
+  //                The fract gets rid of the negative, thus caping the values between [0,1)
+  //                The constants are from the dot product constants and mult constant
+  // Returns Hash Value of the Cell Corner Coords
+  // CHANGE SINCE PRESENTATION: Now using hash without sine from Dave Hoskins, NEW IMPLEMENTATION:
+  // Personal Note: Previous  implementation broke because sine was struggling with large numbers.
+  //                constants grabbed from Dave Hoskins "Hash Without Sine"
+
+  // Convert 2D into 3D Without Decimals (Creates more random variable)
+  var hashVar = fract(vec3f(cellCorner.xyx) * .1031);
+  // Mix values together (rotation to prevent repeat with flipped coordinates) (Constant to prevent 0)
+  hashVar += dot(hashVar, hashVar.yzx + 33.33);
+  // Compress vector to a single hash value between 0-1
+  return fract((hashVar.x + hashVar.y) * hashVar.z);
+}
+
+fn randGradient(cellCorner : vec2f) -> vec2f
+{
+  // Necessary Variables
+  let pi = 3.14159265359;
+
+  // Calls Hash to get Hash Value, then converts it into a vec2f 
+  var hashAngle= hash(cellCorner) * pi * 2.0; // Multiply by 2pi to get the angle of the "arrow"
+
+  // New Vector 2f from Hash
+  var hashVector : vec2f = vec2f(0.0);
+  hashVector.x = cos(hashAngle);  // Converts the angle into x
+  hashVector.y = sin(hashAngle);  // Converts the angle into y
+
+  // Returns the Final Hashed Vector
+  return hashVector;
+}
+`
+
+pt_light_src = `
+fn apply_point_light(point : vec3f, light : point_light) -> vec3f
+{
+  
+  var lightDir = normalize(light.origin - point);
+  var r = length(light.origin - point);
+  var rSquared = r * r;
+  var incomingRad = (1/rSquared) * light.color;
+
+  var shadowRay : ray_struct;
+  shadowRay.origin = point;
+  shadowRay.direction = lightDir;
+
+  var shadowHit = trace(shadowRay);
+ 
+  // TODO: Given the light, apply it to the given point. Return the appropriate incoming radiance to the point.
+  var out_color = incomingRad;
+
+  // TODO: If doing shadows, check for them first
+
+  return out_color;
+}
+`
+
+dir_light_src = `
+fn apply_directional_light(point : vec3f, light : directional_light) -> vec3f
+{
+  
+  // TODO: Given the light, apply it to the given point. Return the appropriate incoming radiance to the point.
+  let lightDir = normalize(light.direction);
+  var rayShadow : ray_struct;
+  rayShadow.direction = lightDir;
+  rayShadow.origin = point + lightDir * 0.001;
+
+  let shadowHit = trace(rayShadow);
+  if (shadowHit.valid) {
+      return vec3f(0.0, 0.0, 0.0);
+  }
+
+  var out_color = light.color;
+
+  // TODO: If doing shadows, check for them first
+
+  return out_color;
+}
+`
+
+area_light_src = `
+fn apply_area_light(point : vec3f, light : area_light) -> vec3f
+{
+  // Starting Variables
+  var outColor = vec3f(0.0);  // Default color output = black
+  let lightCenter = (light.p0 + light.p1 + light.p2 + light.p3) / 4.0;
+  let pi = 3.14159265359;
+
+  // Distance Calculation
+  let distLight =  point - lightCenter;
+  let dist = length(distLight);
+  let lightDir = normalize(distLight);
+
+  // Edge Calculations
+  let edge1 = light.p1 - light.p0;
+  let edge2 = light.p3 - light.p0;
+  let area = length(cross(edge1, edge2));
+  let lightNorm = normalize(cross(edge1, edge2)); // Calculates facing direction of obj
+  
+  // Light Check (Check if behind light)
+  let cosTheta = dot(lightNorm, lightDir);
+  if (cosTheta <= 0.0)
+  {
+    return vec3f(0.0);
+  }
+
+  // SHADOWS
+  var rayShadow : ray_struct;
+  rayShadow.direction = -lightDir;
+  rayShadow.origin = point;
+
+  var shadowHitInfo = trace(rayShadow);
+  if(shadowHitInfo.valid && shadowHitInfo.distance < (dist - 0.001)){
+      return vec3f(0.0);
+  }
+  
+
+  // Radiance Calculation
+  let attenuation = (area * cosTheta) / (dist * dist + 0.01); // Alters light strengh based on the distance and angle from light
+  let radFlx = light.color;
+  let inRad = light.color * attenuation;  
+  
+  // Return Final Color
+  outColor = inRad;
+  return outColor;
+}
+`
